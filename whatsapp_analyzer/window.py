@@ -3,13 +3,15 @@ from pathlib import Path
 from PySide6.QtCore import QDate, QThread, Signal
 from PySide6.QtWidgets import QAbstractItemView
 from PySide6.QtWidgets import (
-    QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+    QApplication, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QProgressBar, QPushButton, QTableWidget, QTableWidgetItem,
     QTabWidget, QVBoxLayout, QWidget, QDateEdit, QComboBox, QInputDialog, QCheckBox,
 )
 
 from .database import Database
 from .parser import iter_messages
+from .updater import UpdateWorker, install_update
+from .version import APP_VERSION
 
 
 class ImportWorker(QThread):
@@ -52,10 +54,13 @@ class MainWindow(QMainWindow):
         self.system_messages = QCheckBox("Mensajes de sistema")
         self.system_messages.setToolTip("Incluir mensajes automáticos de WhatsApp en los resultados")
         self.system_messages.stateChanged.connect(self.system_filter_changed)
+        self.update_button = QPushButton("Actualizar")
+        self.update_button.clicked.connect(self.check_for_updates)
         top.addWidget(self.import_button)
         top.addWidget(self.export_button)
         top.addWidget(self.snapshot_button)
         top.addWidget(self.system_messages)
+        top.addWidget(self.update_button)
         self.status = QLabel("Listo")
         top.addWidget(self.status, 1)
         layout.addLayout(top)
@@ -96,6 +101,27 @@ class MainWindow(QMainWindow):
         self.stats_table.horizontalHeader().setStretchLastSection(True)
         self.stats_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tabs.addTab(self.stats_table, "Estadísticas")
+        contacts_page = QWidget()
+        contacts_layout = QVBoxLayout(contacts_page)
+        self.contacts_table = QTableWidget(0, 3)
+        self.contacts_table.setHorizontalHeaderLabels(["Contacto", "Original", "Mensajes en el período"])
+        self.contacts_table.setColumnHidden(1, True)
+        self.contacts_table.horizontalHeader().setStretchLastSection(True)
+        self.contacts_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        contacts_layout.addWidget(self.contacts_table)
+        contact_buttons = QHBoxLayout()
+        add_contact = QPushButton("Agregar contacto")
+        add_contact.clicked.connect(self.add_contact)
+        rename_contact = QPushButton("Renombrar seleccionado")
+        rename_contact.clicked.connect(self.rename_contact)
+        delete_contact = QPushButton("Eliminar seleccionado")
+        delete_contact.clicked.connect(self.delete_contact)
+        contact_buttons.addWidget(add_contact)
+        contact_buttons.addWidget(rename_contact)
+        contact_buttons.addWidget(delete_contact)
+        contact_buttons.addStretch()
+        contacts_layout.addLayout(contact_buttons)
+        self.tabs.addTab(contacts_page, "Contactos")
         snapshots_page = QWidget()
         snapshots_layout = QVBoxLayout(snapshots_page)
         self.snapshots_table = QTableWidget(0, 5)
@@ -150,6 +176,9 @@ class MainWindow(QMainWindow):
                 self.stats_table.setItem(row_index, 1, QTableWidgetItem(str(row[1])))
             return
         if self.tabs.currentIndex() == 2:
+            self.refresh_contact_counts()
+            return
+        if self.tabs.currentIndex() == 3:
             self.refresh_snapshots()
             return
         self.current_rows = self.database.search(
@@ -191,6 +220,39 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Error de importación", message)
         self.status.setText("Error de importación")
 
+    def check_for_updates(self):
+        self.update_button.setEnabled(False)
+        self.status.setText(f"Buscando actualizaciones... (versión {APP_VERSION})")
+        self.update_worker = UpdateWorker()
+        self.update_worker.update_available.connect(self.update_found)
+        self.update_worker.no_update.connect(self.no_update_found)
+        self.update_worker.failed.connect(self.update_failed)
+        self.update_worker.start()
+
+    def update_found(self, version, download_path):
+        self.update_button.setEnabled(True)
+        answer = QMessageBox.question(
+            self, "Actualización disponible",
+            f"Hay una nueva versión ({version}). ¿Descargar e instalar ahora?",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            if install_update(download_path):
+                QApplication.instance().quit()
+            else:
+                QMessageBox.information(
+                    self, "Ejecutable requerido",
+                    "El actualizador automático funciona desde el archivo .exe publicado."
+                )
+
+    def no_update_found(self, version):
+        self.update_button.setEnabled(True)
+        self.status.setText(f"Ya tenés la última versión ({version})")
+
+    def update_failed(self, message):
+        self.update_button.setEnabled(True)
+        QMessageBox.warning(self, "No se pudo actualizar", message)
+        self.status.setText("No se pudo comprobar la actualización")
+
     def export_results(self):
         if not self.current_rows:
             QMessageBox.information(self, "Sin resultados", "No hay mensajes para exportar.")
@@ -226,6 +288,64 @@ class MainWindow(QMainWindow):
             values = [row[1], row[2], f"{row[3]} a {row[4]}", filter_text, row[8]]
             for column, value in enumerate(values):
                 self.snapshots_table.setItem(row_index, column, QTableWidgetItem(str(value)))
+
+    def refresh_contact_counts(self):
+        rows = self.database.contact_counts(
+            self.chat.currentText(), self.text.text(),
+            self.start.date().toString("yyyy-MM-dd"), self.end.date().toString("yyyy-MM-dd"),
+            self.system_messages.isChecked())
+        self.contacts_table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            self.contacts_table.setItem(row_index, 0, QTableWidgetItem(row[1]))
+            self.contacts_table.setItem(row_index, 1, QTableWidgetItem(row[0]))
+            self.contacts_table.setItem(row_index, 2, QTableWidgetItem(str(row[2])))
+
+    def selected_contact_original(self):
+        selected = self.contacts_table.selectionModel().selectedRows()
+        if not selected:
+            return None
+        return self.contacts_table.item(selected[0].row(), 1).text()
+
+    def rename_contact(self):
+        original = self.selected_contact_original()
+        if not original:
+            QMessageBox.information(self, "Seleccionar contacto", "Seleccioná un contacto primero.")
+            return
+        current = self.contacts_table.item(self.contacts_table.currentRow(), 0).text()
+        alias, accepted = QInputDialog.getText(self, "Renombrar contacto", "Nombre visible:", text=current)
+        if accepted and alias.strip():
+            self.database.rename_contact(original, alias)
+            self.refresh_contacts()
+            self.refresh_contact_counts()
+            self.refresh()
+
+    def delete_contact(self):
+        original = self.selected_contact_original()
+        if not original:
+            QMessageBox.information(self, "Seleccionar contacto", "Seleccioná un contacto primero.")
+            return
+        answer = QMessageBox.question(
+            self, "Eliminar contacto", "Se quitará de la lista, pero no se borrarán sus mensajes. ¿Continuar?"
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.database.delete_contact(self.chat.currentText(), original)
+            self.refresh_contacts()
+            self.refresh_contact_counts()
+            self.refresh()
+
+    def add_contact(self):
+        if not self.chat.currentText():
+            QMessageBox.information(self, "Sin chat", "Primero importá un chat.")
+            return
+        contact, accepted = QInputDialog.getText(
+            self, "Agregar contacto", "Nombre o número del contacto:"
+        )
+        if not accepted or not contact.strip():
+            return
+        if contact.strip() == "Sistema" and not self.system_messages.isChecked():
+            self.system_messages.setChecked(True)
+        self.database.add_contact(self.chat.currentText(), contact)
+        self.refresh_contact_counts()
 
     def compare_snapshots(self):
         selected = self.snapshots_table.selectionModel().selectedRows()
