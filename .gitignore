@@ -1,0 +1,19 @@
+# Datos privados de la aplicación
+data/*
+!data/.gitkeep
+
+# Entorno y archivos generados por Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Archivos de compilación
+build/
+dist/
+*.spec
+WhatsAppChatAnalyzer-Windows.zip
+
+# Archivos temporales
+*.db
+*.db-wal
+*.db-shm
