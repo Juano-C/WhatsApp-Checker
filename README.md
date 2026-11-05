@@ -39,3 +39,5 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```
 
 El resultado será `WhatsAppChatAnalyzer-Windows.zip`. Compartí ese ZIP o subilo como archivo adjunto de un GitHub Release. El usuario solo necesita extraerlo y abrir `WhatsAppChatAnalyzer.exe`; la base de datos se creará en una carpeta `data` junto al ejecutable.
+
+La aplicación incluye el botón **Actualizar**. Antes de compilar una nueva versión, aumentá `APP_VERSION` en `whatsapp_analyzer/version.py`, por ejemplo de `0.1.0` a `0.2.0`. Luego ejecutá `build.ps1` y subí el ZIP a un nuevo GitHub Release con una etiqueta como `v0.2.0`.
